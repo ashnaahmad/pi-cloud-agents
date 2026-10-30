@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CLI_VERSION, discoverCredentialsWithoutPi, parseCliArgs, runCli } from "../../cli/main.js";
+import { buildBundle } from "../../core/pi-config.js";
+import { DEFAULT_LOCAL_CONFIG } from "../../shared/config.js";
 
 describe("Standalone CLI Tool (T4.3c)", () => {
   let tmpDir: string;
@@ -86,6 +88,41 @@ describe("Standalone CLI Tool (T4.3c)", () => {
 
       process.env.OPENAI_API_KEY = undefined;
       process.env.ANTHROPIC_API_KEY = undefined;
+    });
+
+    it("syncs the environment API key when auth.json only has a non-opted-in OAuth entry", () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "auth.json"),
+        JSON.stringify({
+          anthropic: {
+            type: "oauth",
+            refresh: "oauth-refresh-token",
+            access: "oauth-access-token",
+            expires: 4102444800000,
+          },
+        }),
+      );
+      const previous = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = "sk-ant-from-env";
+
+      try {
+        const creds = discoverCredentialsWithoutPi(tmpDir);
+        // No OAuth opt-in: the OAuth entry must not be synced, but the env key must be.
+        const { secrets } = buildBundle({ authEntries: creds, localConfig: DEFAULT_LOCAL_CONFIG });
+
+        expect(secrets.get("anthropic")).toBeDefined();
+        expect(JSON.parse(secrets.get("anthropic")!)).toEqual({
+          type: "api_key",
+          key: "sk-ant-from-env",
+        });
+        expect([...secrets.values()].join("\n")).not.toContain("oauth-refresh-token");
+      } finally {
+        if (previous === undefined) {
+          Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
+        } else {
+          process.env.ANTHROPIC_API_KEY = previous;
+        }
+      }
     });
   });
 
