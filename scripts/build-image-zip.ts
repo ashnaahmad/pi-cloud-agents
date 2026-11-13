@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
 export const DETERMINISTIC_BUILD_DATE = new Date("2026-01-01T00:00:00.000Z");
-export const PINNED_PI_VERSION = "0.85.1";
+export const PINNED_PI_VERSION = "1.4.0";
 export const RUNNER_VERSION = "0.1.0";
 export const MAX_IMAGE_ZIP_BYTES = 5 * 1024 * 1024; // 5 MB
 

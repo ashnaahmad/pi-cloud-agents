@@ -57,7 +57,7 @@ describe("Deterministic ZIP Builder", () => {
 describe("Hello MicroVM Bundle Generation", () => {
   it("generates valid Dockerfile with required instructions", () => {
     const df = generateDockerfile();
-    expect(df).toContain("FROM public.ecr.aws/lambda/microvms:al2023-minimal:latest");
+    expect(df).toContain("FROM public.ecr.aws/lambda/microvms:al2023-minimal");
     expect(df).toContain("EXPOSE 9000");
     expect(df).toContain("EXPOSE 8080");
     expect(df).toContain("CMD");

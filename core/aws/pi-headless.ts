@@ -1,7 +1,7 @@
 /**
  * Pi Headless on ARM64 AL2023 and Mock LLM Provider Spike Engine (T0.5).
  * Validates:
- *  1. pi --version matches pinned version (0.85.1)
+ *  1. pi --version matches pinned version (1.4.0)
  *  2. node -v >= 22.19
  *  3. uname -m = aarch64 / arm64 (target MicroVM architecture)
  *  4. pi --mode rpc --no-session --provider mock-llm --model scripted execution
@@ -22,7 +22,7 @@ import type { S3Client } from "@aws-sdk/client-s3";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 
 export const TEST_PI_HEADLESS_PREFIX = "pi-cloud-agents-test-pi-headless";
-export const PINNED_PI_VERSION = "0.85.1";
+export const PINNED_PI_VERSION = "1.4.0";
 export const MIN_NODE_VERSION = "22.19.0";
 
 export interface PiHeadlessOptions {

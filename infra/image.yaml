@@ -75,18 +75,21 @@ Resources:
         - Key: "HOOK_PORT"
           Value: "9000"
       Hooks:
-        ReadyHook:
-          TimeoutInSeconds: 120
-        ValidateHook:
-          TimeoutInSeconds: 120
-        RunHook:
-          TimeoutInSeconds: 30
-        ResumeHook:
-          TimeoutInSeconds: 15
-        SuspendHook:
-          TimeoutInSeconds: 45
-        TerminateHook:
-          TimeoutInSeconds: 45
+        Port: 9000
+        MicrovmImageHooks:
+          Ready: "ENABLED"
+          ReadyTimeoutInSeconds: 120
+          Validate: "ENABLED"
+          ValidateTimeoutInSeconds: 120
+        MicrovmHooks:
+          Run: "ENABLED"
+          RunTimeoutInSeconds: 30
+          Resume: "ENABLED"
+          ResumeTimeoutInSeconds: 15
+          Suspend: "ENABLED"
+          SuspendTimeoutInSeconds: 45
+          Terminate: "ENABLED"
+          TerminateTimeoutInSeconds: 45
       Logging:
         CloudWatch:
           LogGroup: !Ref ImageLogGroup
@@ -101,7 +104,6 @@ Resources:
   ControllerExecutionRole:
     Type: "AWS::IAM::Role"
     Properties:
-      RoleName: !Sub "pi-cloud-agents-${AWS::StackName}-controller-role-${AWS::Region}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -127,16 +129,19 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/pi-cloud-agents/${AWS::StackName}/controller"
                   - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/pi-cloud-agents-${AWS::StackName}-controller*"
-              - Sid: MicrovmLifecycleManagement
+              - Sid: MicrovmListing
                 Effect: Allow
                 Action:
                   - "lambda:ListMicrovms"
+                Resource: "*"
+              - Sid: MicrovmLifecycleManagement
+                Effect: Allow
+                Action:
                   - "lambda:GetMicrovm"
                   - "lambda:SuspendMicrovm"
                   - "lambda:TerminateMicrovm"
                   - "lambda:CreateMicrovmAuthToken"
                 Resource:
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*"
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:${ImageName}"
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:${ImageName}:*"
               - Sid: S3ManifestAndControllerStorage

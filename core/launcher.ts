@@ -28,18 +28,25 @@ import { DEFAULT_STACK_NAME } from "./sync.js";
 export class LaunchError extends Error {
   readonly code: string;
   readonly remediation?: string;
+  /** Set when the MicroVM was created before the failure, so the caller can terminate it. */
+  readonly microvmId?: string;
 
-  constructor(message: string, options: { code: string; remediation?: string }) {
+  constructor(
+    message: string,
+    options: { code: string; remediation?: string; microvmId?: string },
+  ) {
     super(message);
     this.name = "LaunchError";
     this.code = options.code;
     this.remediation = options.remediation;
+    this.microvmId = options.microvmId;
   }
 }
 
 export interface GitRepoInfo {
   remoteUrl: string;
   currentBranch: string;
+  headCommit: string;
   isDirty: boolean;
   dirtyFilesCount: number;
 }
@@ -92,6 +99,11 @@ export function inspectGitRepo(repoDir = process.cwd()): GitRepoInfo {
 
     return {
       remoteUrl,
+      headCommit: execSync("git rev-parse --verify HEAD^{commit}", {
+        cwd: repoDir,
+        encoding: "utf8",
+        timeout: 10000,
+      }).trim(),
       currentBranch: currentBranch || "main",
       isDirty,
       dirtyFilesCount,
@@ -132,6 +144,40 @@ export interface LaunchRunOptions {
   readyTimeoutMs?: number;
   onProgress?: (step: string, detail?: string) => void;
   dryRun?: boolean;
+  /** Overrides `defaults.maxDurationHours` for this run (seconds, at most 8 hours). */
+  maxDurationSec?: number;
+  /** Defaults to true: finalize pushes the work branch. */
+  autoPush?: boolean;
+}
+
+/**
+ * Everything needed to start a run, resolved locally from the repository, local config and
+ * stack outputs. Plain JSON, so it can be stored and started later from another host
+ * (the scheduled-task launcher); it holds secret names, never secret values.
+ */
+export interface PreparedLaunch {
+  payload: LaunchPayload;
+  manifest: RunManifest;
+  region: string;
+  profile?: string;
+  imageArn: string;
+  imageVersion: string;
+  executionRoleArn?: string;
+  imageLogGroup: string;
+  maxConcurrent: number;
+  maxDurationSec: number;
+  suspendedDurationSec: number;
+  egressConnectorArn?: string;
+}
+
+export interface StartRunOptions {
+  prompt: string;
+  clientFactory?: AwsClientFactory;
+  enableShell?: boolean;
+  pollIntervalMs?: number;
+  readyTimeoutMs?: number;
+  onProgress?: (step: string, detail?: string) => void;
+  dryRun?: boolean;
 }
 
 export interface LaunchRunResult {
@@ -141,26 +187,36 @@ export interface LaunchRunResult {
   workBranch: string;
   manifest: RunManifest;
   warnings: string[];
+  /** Whether the initial prompt reached the runner; otherwise the VM is idle without a task. */
+  promptDispatched?: boolean;
+}
+
+interface CoreStackResources {
+  bucket: string;
+  /** Role the MicroVM guest runs as; without it the runner has no AWS credentials. */
+  executionRoleArn?: string;
+  imageLogGroup?: string;
 }
 
 /**
- * Resolves the S3 storage bucket name from the core stack outputs.
+ * Resolves the S3 storage bucket, guest execution role and image log group from the core stack outputs.
  */
-async function resolveStorageBucket(
+async function resolveCoreStackResources(
   cfnClient: import("@aws-sdk/client-cloudformation").CloudFormationClient,
   stackName: string,
-): Promise<string> {
+): Promise<CoreStackResources> {
   try {
     const res = await cfnClient.send(new DescribeStacksCommand({ StackName: stackName }));
-    const stack = res.Stacks?.[0];
-    const bucketOut = stack?.Outputs?.find(
-      (o) =>
-        o.OutputKey === "BucketName" ||
-        o.OutputKey === "StorageBucketName" ||
-        o.OutputKey === "S3BucketName",
-    );
-    if (bucketOut?.OutputValue) {
-      return bucketOut.OutputValue;
+    const outputs = res.Stacks?.[0]?.Outputs ?? [];
+    const output = (...keys: string[]) =>
+      outputs.find((o) => o.OutputKey && keys.includes(o.OutputKey))?.OutputValue;
+    const bucket = output("BucketName", "StorageBucketName", "S3BucketName");
+    if (bucket) {
+      return {
+        bucket,
+        executionRoleArn: output("ExecutionRoleArn"),
+        imageLogGroup: output("ImageLogGroup"),
+      };
     }
   } catch (err) {
     throw new LaunchError(
@@ -235,6 +291,26 @@ export async function writeIndexToS3(
  * Main launch orchestrator for starting a cloud agent run.
  */
 export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchRunResult> {
+  const { prepared, warnings } = await prepareCloudRun(options);
+  const result = await startPreparedRun(prepared, {
+    prompt: options.prompt,
+    clientFactory: options.clientFactory,
+    enableShell: options.enableShell,
+    pollIntervalMs: options.pollIntervalMs,
+    readyTimeoutMs: options.readyTimeoutMs,
+    onProgress: options.onProgress,
+    dryRun: options.dryRun,
+  });
+  return { ...result, warnings: [...warnings, ...result.warnings] };
+}
+
+/**
+ * Resolves the launch locally: repository, model, repo config, stack outputs and image version.
+ * Writes nothing.
+ */
+export async function prepareCloudRun(
+  options: Omit<LaunchRunOptions, "prompt"> & { prompt?: string },
+): Promise<{ prepared: PreparedLaunch; warnings: string[] }> {
   const warnings: string[] = [];
   const repoDir = options.repoDir ? path.resolve(options.repoDir) : process.cwd();
   const config = options.config || loadLocalConfig({ customDir: options.piAgentDir });
@@ -258,7 +334,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
   }
 
   if (gitInfo.isDirty) {
-    const warnMsg = `Warning: ${gitInfo.dirtyFilesCount} uncommitted local change(s) detected. Cloud agents will clone from '${gitInfo.remoteUrl}' (${gitInfo.currentBranch}).`;
+    const warnMsg = `Warning: ${gitInfo.dirtyFilesCount} uncommitted local change(s) excluded. Cloud agents will fetch '${gitInfo.remoteUrl}' at commit ${gitInfo.headCommit} (${gitInfo.currentBranch}); push that commit before provisioning.`;
     warnings.push(warnMsg);
     options.onProgress?.("git_warning", warnMsg);
   }
@@ -280,14 +356,17 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
   // 3. Read RepoConfig (.pi/cloud-agents.json) if present
   const repoConfig: RepoConfig | null = loadRepoConfig(repoDir);
 
-  // 4. Concurrency Limit Enforcement
-  options.onProgress?.("check_concurrency", "Checking active MicroVM concurrency");
+  // 4. Resolve stack outputs and the active image version
   const lambdaMicrovmsClient = factory.getLambdaMicrovmsClient({ region, profile });
   const cfnClient = factory.getCloudFormationClient({ region, profile });
   const s3Client = factory.getS3Client({ region, profile });
 
-  const bucket = await resolveStorageBucket(cfnClient, stackName);
   const imageName = config.image.name || "pi-cloud-agents-runner";
+  const {
+    bucket,
+    executionRoleArn,
+    imageLogGroup = `/aws/lambda/microvms/${imageName}`,
+  } = await resolveCoreStackResources(cfnClient, stackName);
 
   const imageManager = new MicrovmImageManager({
     microvmsClient: lambdaMicrovmsClient,
@@ -309,38 +388,14 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
   const imageArn = imageDesc.arn;
   const imageVersion = imageDesc.version;
 
-  // Query active running/suspended MicroVMs
-  try {
-    const imageVms = await collectPages({
-      fetchPage: (nextToken: string | undefined) =>
-        lambdaMicrovmsClient.send(
-          new ListMicrovmsCommand({ imageIdentifier: imageArn, nextToken }),
-        ),
-      nextToken: (page) => page.nextToken,
-      items: (page) => page.items,
-    });
-    const activeVms = imageVms.filter((vm) => vm.state === "RUNNING" || vm.state === "SUSPENDED");
-
-    const maxConcurrent = config.defaults.maxConcurrent ?? 3;
-    if (activeVms.length >= maxConcurrent) {
-      throw new LaunchError(
-        `Active cloud agent runs limit reached (${activeVms.length}/${maxConcurrent} active VMs).`,
-        {
-          code: "CONCURRENCY_LIMIT_EXCEEDED",
-          remediation: `Wait for an active run to finish, terminate an idle run with '/cloud stop <id>', or increase concurrency limit via '/cloud config defaults.maxConcurrent <n>'.`,
-        },
-      );
-    }
-  } catch (err: unknown) {
-    if ((err as Error) instanceof LaunchError) throw err;
-    // Non-fatal if list check fails due to permissions, proceed to launch
-  }
-
   // 5. Construct LaunchPayload
   const runId = generateRunId();
   const workBranch = options.workBranch || `pi-cloud/${runId}`;
 
   const resolvedInstallTimeout = options.installTimeoutSec || (repoConfig ? 600 : 300);
+  const maxDurationSec = options.maxDurationSec ?? (config.defaults.maxDurationHours || 4) * 3600;
+  const suspendAfterIdleSec = (config.defaults.idle.suspendAfterMin || 15) * 60;
+  const terminateAfterSuspendedSec = (config.defaults.idle.terminateAfterSuspendedMin || 120) * 60;
 
   const payload: LaunchPayload = {
     v: 1,
@@ -353,7 +408,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     },
     repo: {
       url: gitInfo.remoteUrl,
-      ref: gitInfo.currentBranch,
+      ref: gitInfo.headCommit,
       workBranch,
       depth: options.depth || 1,
     },
@@ -373,11 +428,11 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     options: {
       installTimeoutSec: resolvedInstallTimeout,
       trustProjectConfig: true,
-      idleGraceSec: (config.defaults.idle.suspendAfterMin || 15) * 60,
-      suspendAfterIdleSec: (config.defaults.idle.suspendAfterMin || 15) * 60,
-      terminateAfterSuspendedSec: (config.defaults.idle.terminateAfterSuspendedMin || 120) * 60,
-      autoPush: true,
-      maxDurationSec: (config.defaults.maxDurationHours || 4) * 3600,
+      idleGraceSec: suspendAfterIdleSec,
+      suspendAfterIdleSec,
+      terminateAfterSuspendedSec,
+      autoPush: options.autoPush ?? config.defaults.autoPush ?? true,
+      maxDurationSec,
     },
     logGroup: `/aws/lambda/microvms/${imageName}`,
   };
@@ -386,7 +441,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
   assertPayloadFits(payload);
 
   const nowIso = new Date().toISOString();
-  let manifest: RunManifest = {
+  const manifest: RunManifest = {
     v: 1,
     runId,
     owner: payload.owner,
@@ -396,7 +451,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     imageVersion,
     repo: {
       url: gitInfo.remoteUrl,
-      ref: gitInfo.currentBranch,
+      ref: gitInfo.headCommit,
       workBranch,
     },
     model: {
@@ -408,6 +463,73 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     },
     timeline: [{ status: "launching", at: nowIso }],
   };
+
+  return {
+    prepared: {
+      payload,
+      manifest,
+      region,
+      profile,
+      imageArn,
+      imageVersion,
+      executionRoleArn,
+      imageLogGroup,
+      maxConcurrent: config.defaults.maxConcurrent ?? 3,
+      maxDurationSec,
+      suspendedDurationSec: terminateAfterSuspendedSec,
+      egressConnectorArn: config.egressConnectorArn,
+    },
+    warnings,
+  };
+}
+
+/**
+ * Starts a prepared run: concurrency check, initial manifest, RunMicrovm, index, readiness
+ * polling and the initial prompt. Needs only AWS credentials, not the local checkout or config.
+ */
+export async function startPreparedRun(
+  prepared: PreparedLaunch,
+  options: StartRunOptions,
+): Promise<LaunchRunResult> {
+  const warnings: string[] = [];
+  const { payload, region, profile, imageArn, imageVersion, executionRoleArn, imageLogGroup } =
+    prepared;
+  const { runId } = payload;
+  const { bucket } = payload.stack;
+  const workBranch = payload.repo.workBranch;
+  const stackName = payload.stack.name;
+  let manifest = prepared.manifest;
+  const factory = options.clientFactory || new AwsClientFactory({ region, profile });
+  const lambdaMicrovmsClient = factory.getLambdaMicrovmsClient({ region, profile });
+  const s3Client = factory.getS3Client({ region, profile });
+
+  options.onProgress?.("check_concurrency", "Checking active MicroVM concurrency");
+  // Query active running/suspended MicroVMs
+  try {
+    const imageVms = await collectPages({
+      fetchPage: (nextToken: string | undefined) =>
+        lambdaMicrovmsClient.send(
+          new ListMicrovmsCommand({ imageIdentifier: imageArn, nextToken }),
+        ),
+      nextToken: (page) => page.nextToken,
+      items: (page) => page.items,
+    });
+    const activeVms = imageVms.filter((vm) => vm.state === "RUNNING" || vm.state === "SUSPENDED");
+
+    const maxConcurrent = prepared.maxConcurrent;
+    if (activeVms.length >= maxConcurrent) {
+      throw new LaunchError(
+        `Active cloud agent runs limit reached (${activeVms.length}/${maxConcurrent} active VMs).`,
+        {
+          code: "CONCURRENCY_LIMIT_EXCEEDED",
+          remediation: `Wait for an active run to finish, terminate an idle run with '/cloud stop <id>', or increase concurrency limit via '/cloud config defaults.maxConcurrent <n>'.`,
+        },
+      );
+    }
+  } catch (err: unknown) {
+    if ((err as Error) instanceof LaunchError) throw err;
+    // Non-fatal if list check fails due to permissions, proceed to launch
+  }
 
   // 6. Write Initial Manifest to S3
   options.onProgress?.(
@@ -438,10 +560,12 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
         imageIdentifier: imageArn,
         imageVersion,
         clientToken: runId,
-        maximumDurationInSeconds: (config.defaults.maxDurationHours || 4) * 3600,
+        executionRoleArn,
+        logging: { cloudWatch: { logGroup: imageLogGroup } },
+        maximumDurationInSeconds: prepared.maxDurationSec,
         idlePolicy: {
           maxIdleDurationSeconds: 1200,
-          suspendedDurationSeconds: (config.defaults.idle.terminateAfterSuspendedMin || 120) * 60,
+          suspendedDurationSeconds: prepared.suspendedDurationSec,
           autoResumeEnabled: true,
         },
         runHookPayload: JSON.stringify(payload),
@@ -451,8 +575,8 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
               `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:SHELL_INGRESS`,
             ]
           : [`arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`],
-        egressNetworkConnectors: config.egressConnectorArn
-          ? [config.egressConnectorArn]
+        egressNetworkConnectors: prepared.egressConnectorArn
+          ? [prepared.egressConnectorArn]
           : [
               `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
             ],
@@ -500,6 +624,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     throw new LaunchError(`Failed to launch MicroVM: ${mappedErr.message}`, {
       code: mappedErr.code,
       remediation: mappedErr.remediation,
+      microvmId: microvmId || undefined,
     });
   }
 
@@ -521,6 +646,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
   const readyTimeout = options.readyTimeoutMs || 5 * 60 * 1000; // 5 min
   const deadline = Date.now() + readyTimeout;
   let isReady = false;
+  let promptDispatched = false;
 
   while (Date.now() <= deadline) {
     try {
@@ -555,6 +681,7 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
         prompt: options.prompt,
         mode: "prompt",
       });
+      promptDispatched = true;
       options.onProgress?.("prompt_dispatched", "Prompt dispatched successfully.");
     } catch (err: unknown) {
       warnings.push(
@@ -570,5 +697,6 @@ export async function launchCloudRun(options: LaunchRunOptions): Promise<LaunchR
     workBranch,
     manifest,
     warnings,
+    promptDispatched,
   };
 }

@@ -2,7 +2,8 @@
 
 Statuses: `todo` · `ready` (deps done) · `in-progress` (agent, started) · `blocked` (reason) · `done` (evidence link) · gates: `pending` / `passed`.
 Agents: update the row when you start and finish a task; add the evidence link. Owner: record
-decisions in the log at the bottom. **Implementation has not started (owner decision Q11).**
+decisions in the log at the bottom. The phase tables and decisions below are historical;
+current supported behavior and limits are documented in README.md and the personal-assignment evidence.
 
 ## Phase 0 — Foundations and spikes
 
@@ -98,6 +99,10 @@ decisions in the log at the bottom. **Implementation has not started (owner deci
 | G5 | Gate: security review + release | S | T5.7, T5.8 | passed | [docs/evidence/G5.md](docs/evidence/G5.md) |
 | T5.10 | Post-release review fixes: packaging, IAM hygiene, bounded pagination | M | G5 | done | [docs/evidence/T5.10.md](docs/evidence/T5.10.md) |
 | T5.11 | `/cloud update` passes the image stack its declared parameters | S | T4.10 | done | [docs/evidence/T5.11.md](docs/evidence/T5.11.md) |
+
+## Personal assignment repair (2026-11-13)
+
+Bounded personal ChatGPT assignment, automatic suspend/resume, fresh-client result retrieval and post-termination Git recovery passed in a separate AWS test stack. See [cloud trial](../evidence/personal-cloud-trial.md) and [local verification](../evidence/personal-assignment-round-trip.md). Trial VM termination and stack/image/bucket/copied-secret deletion are verified. Historical gates above are not fresh acceptance evidence for these changes. TUI attach, cross-VM continuation and unattended OAuth renewal remain experimental.
 
 ## Decisions log (owner)
 

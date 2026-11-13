@@ -162,7 +162,7 @@ function resolveLocalPiFiles(options: SyncOptions): {
  * Performs full sync of pi configuration bundle and provider secrets to AWS.
  */
 export async function syncPiConfig(options: SyncOptions = {}): Promise<SyncResult> {
-  const config = options.localConfig ?? loadLocalConfig();
+  const config = options.localConfig ?? loadLocalConfig({ customDir: options.piAgentDir });
   const stackName = options.stackName ?? config.stackName ?? DEFAULT_STACK_NAME;
   const factory = options.clientFactory ?? new AwsClientFactory();
 
@@ -256,7 +256,7 @@ export async function syncPiConfig(options: SyncOptions = {}): Promise<SyncResul
       syncedAt: nowIso,
     },
   };
-  saveLocalConfig(updatedConfig);
+  saveLocalConfig(updatedConfig, { customDir: options.piAgentDir });
 
   return {
     success: true,

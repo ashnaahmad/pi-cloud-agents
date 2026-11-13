@@ -79,6 +79,11 @@ describe("T5.10 CLI packaging", () => {
     expect(paths.has("dist/cli/main.js.map")).toBe(false);
     expect(paths.has("dist/image/app.zip")).toBe(true);
     expect(paths.has("dist/controller.zip")).toBe(true);
+    expect(paths.has("skills/cloud-assignment/SKILL.md")).toBe(true);
+    expect(paths.has("README.md")).toBe(true);
+    expect(paths.has("AGENTS.md")).toBe(true);
+    expect(paths.has("docs/protocol.md")).toBe(true);
+    expect(paths.has("scheduled/cli.ts")).toBe(false);
   });
 
   it("runs the built bin with --version", async () => {

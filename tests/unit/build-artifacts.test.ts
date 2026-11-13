@@ -23,6 +23,10 @@ describe("T2.9 Build Artifacts & Deterministic Image ZIP", () => {
     const controllerZipStats = fs.statSync(summary.controllerZipPath);
     expect(controllerZipStats.size).toBeLessThan(2 * 1024 * 1024); // controller.zip < 2 MB
     expect(controllerZipStats.size).toBeGreaterThan(1000); // at least 1KB
+    // The ESM bundle must be index.mjs: Lambda loads a .js handler as CommonJS.
+    const controllerZip = fs.readFileSync(summary.controllerZipPath);
+    expect(controllerZip.includes("index.mjs")).toBe(true);
+    expect(controllerZip.includes("index.js")).toBe(false);
 
     // Verify manifest contents
     const manifest = JSON.parse(fs.readFileSync(summary.imageZip.manifestPath, "utf8"));

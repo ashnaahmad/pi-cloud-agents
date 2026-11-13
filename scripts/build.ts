@@ -78,10 +78,11 @@ export async function buildAll(): Promise<BuildSummary> {
   });
 
   const controllerCode = fs.readFileSync(controllerOut);
+  // The bundle is ESM; Lambda's Node runtime loads index.js as CommonJS, so ship it as .mjs.
   const controllerZipBuffer = createDeterministicZip(
     [
       {
-        name: "index.js",
+        name: "index.mjs",
         content: controllerCode,
         mode: 0o644,
         mtime: DETERMINISTIC_BUILD_DATE,

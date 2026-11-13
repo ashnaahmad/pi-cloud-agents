@@ -42,7 +42,7 @@ import {
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
 import { mockClient } from "aws-sdk-client-mock";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeCloudDestroy, executeCloudUpdate } from "../../core/lifecycle-ops.js";
 import {
   handleCloudDestroyCommand,
@@ -111,6 +111,8 @@ describe("T4.10 Cloud Update & Destroy", () => {
     secretsMock.reset();
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cloud-update-test-"));
+    // Destroy deletes the local config and setup ledger; keep it away from the real agent dir.
+    vi.stubEnv("PI_AGENT_DIR", tmpDir);
     tmpRunnerZip = path.join(tmpDir, "app.zip");
     fs.writeFileSync(tmpRunnerZip, "dummy zip content");
     fs.writeFileSync(
@@ -181,6 +183,7 @@ describe("T4.10 Cloud Update & Destroy", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (tmpDir && fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

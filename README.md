@@ -1,133 +1,106 @@
 # pi-cloud-agents
 
-Autonomous cloud agents for [pi](https://pi.dev) running inside Firecracker-isolated AWS Lambda MicroVMs in your own AWS account, with rich local TUI mirroring, zero-idle costs, and verified one-command setup.
+Experimental cloud assignments for [Pi](https://pi.dev), using AWS Lambda MicroVMs in your own AWS account. This personal port carries deployment and recovery fixes on top of upstream `cf75c94`.
 
-```bash
-# 1. Install extension into pi
-pi install npm:pi-cloud-agents
+The supported workflow under test is a bounded `cloud_agent` assignment: pin a reachable Git commit, run with selected credentials, retrieve the assistant answer and a verified Git bundle, then clean up. See the [personal cloud trial](docs/evidence/personal-cloud-trial.md) and [local verification](docs/evidence/personal-assignment-round-trip.md) for evidence and remaining limits.
 
-# 2. Automated 1-command setup and verification
-npx pi-cloud-agents setup --verify
+## Current limits
 
-# 3. Launch and manage cloud agents
-pi
-/cloud new "Add retry logic to the S3 uploader and open a PR"
-/cloud attach <runId>
+- `/cloud attach` uses an older Pi adapter and remains experimental. Cross-VM `/cloud continue` does not restore the previous workspace or session. Neither is a verified recovery path.
+- `verify` includes checks that report success without executing a model assignment. A passing setup/verify report does not prove the workflow works.
+- ChatGPT OAuth requires explicit opt-in. Provider renewal metadata is preserved, but guest refreshes are not written back to Secrets Manager. Do not share one rotating credential between active local and cloud processes or assume unattended subscription renewal works.
+- Suspension reduces compute use; images, snapshots, storage and supporting AWS services can still incur charges. See [AWS pricing](https://aws.amazon.com/lambda/pricing/) for the selected region. Maximum duration bounds a VM, not total account spending.
+
+## Setup from source
+
+Use Node.js 22.19 or newer, an installed Pi CLI, Git and a configured AWS profile. The guest image pins Pi 1.4.0. Run this port from source; the commands below do not install an npm release.
+
+```sh
+npm ci
+npm run build
 ```
 
----
+Create a dedicated agent directory outside the checkout. Set both variables before starting the CLI or Pi extension:
 
-## Key Features
-
-- **Isolated AWS Lambda MicroVMs**: Every agent runs in a dedicated Firecracker MicroVM container (ARM64 AL2023) in your own AWS account.
-- **Rich Local TUI Mirroring**: Live streamed assistant responses, collapsible thinking blocks, syntax-highlighted diffs, tool execution logs, and live telemetry footers.
-- **Laptop-Close Resilience**: Close your laptop or detach with `/cloud detach`; the cloud agent continues autonomously. Reopening `pi -c` reattaches seamlessly with zero duplicate entries.
-- **Any pi Model & Provider**: Automatically reuses your local pi credentials (`auth.json`, `models.json`, API keys, Anthropic/OpenAI/Copilot OAuth, Amazon Bedrock).
-- **$0.00 Idle Cost**: MicroVMs suspend automatically when idle. You pay only for active CPU seconds.
-- **Git Checkpoints & Pull Requests**: Auto-commits changes to `pi-cloud/<runId>` work branches and creates pull requests with `/cloud pr`.
-
----
-
-## Quickstart
-
-### 1. Prerequisites
-- Node.js >= 22.19
-- AWS account with credentials configured in `~/.aws/credentials` or `AWS_PROFILE` (default region: `us-east-1`).
-- Pinned `pi` CLI installed.
-
-### 2. Setup
-Run the automated setup wizard:
-```bash
-npx pi-cloud-agents setup --verify
-```
-*Or from inside the pi TUI:*
-```
-/cloud setup
+```sh
+export PI_AGENT_DIR="$HOME/.pi/cloud-personal/agent"
+export PI_CODING_AGENT_DIR="$PI_AGENT_DIR"
+mkdir -p "$PI_AGENT_DIR"
+chmod 700 "$PI_AGENT_DIR"
 ```
 
-The wizard deploys:
-1. **Core CloudFormation Stack**: Secure S3 artifact & session storage bucket, minimal IAM execution roles.
-2. **Image CloudFormation Stack**: Lambda MicroVM runner image, 1-minute Controller Lambda daemon for keepalive and auto-suspension.
-3. **Pi Config Bundle**: Synced model credentials stored securely in AWS Secrets Manager.
-4. **Verification Engine**: Executes static permission probes and a zero-token smoke run.
+Use Pi's `/login` in that profile for the intended provider. Do not copy global auth, settings, environment files or conversation history. For personal ChatGPT assignments, create `pi-cloud-agents.json` in that directory with an explicitly selected AWS profile/region and separate short stack/image names. For example, replace the profile and region below with your own:
 
----
-
-## Commands Reference
-
-### TUI Commands (Inside pi)
-
-| Command | Description |
-|---|---|
-| `/cloud` | Opens the Cloud Hub overview and quick actions |
-| `/cloud new [prompt]` | Launches a new autonomous cloud agent |
-| `/cloud list` | Lists all active and recent cloud runs with status badges and costs |
-| `/cloud status [runId]` | Displays comprehensive metrics timeline, tool stats, and VM resources |
-| `/cloud attach [runId]` | Attaches live mirror session to an active cloud agent |
-| `/cloud detach` | Detaches from mirror session without interrupting the cloud agent |
-| `/cloud abort [runId]` | Aborts current turn on the remote agent (`ctrl+alt+c`) |
-| `/cloud continue <runId>`| Continues a completed run across the 8-hour MicroVM limit |
-| `/cloud logs <runId> [--follow]` | Streams real-time CloudWatch logs for a run |
-| `/cloud pr <runId> [title]` | Finalizes work branch and opens a GitHub Pull Request |
-| `/cloud shell <runId>` | Opens an interactive PTY shell inside the running MicroVM |
-| `/cloud config [key] [val]` | Views and updates local settings and budget limits |
-| `/cloud sync` | Refreshes synced provider API keys and model configurations |
-| `/cloud dashboard` | Live fleet observability view with event-rate sparklines |
-| `/cloud verify` | Runs full system health and diagnostic smoke tests |
-| `/cloud doctor` | Checks local configuration, AWS credentials, and stack drift |
-| `/cloud diag <runId>` | Exports sanitized diagnostics bundle for troubleshooting |
-| `/cloud update` | Rebuilds and updates MicroVM runner image stack |
-| `/cloud destroy` | Completely tears down all cloud infrastructure and deletes secrets |
-| `/cloud iam-policy` | Displays least-privilege IAM policy for AWS account admins |
-
-### Standalone CLI Commands
-
-```bash
-npx pi-cloud-agents setup [--verify] [--dry-run] [--profile <p>] [--region <r>]
-npx pi-cloud-agents verify [--with-model] [--json]
-npx pi-cloud-agents doctor [--json]
-npx pi-cloud-agents config [key] [val]
-npx pi-cloud-agents sync
-npx pi-cloud-agents update
-npx pi-cloud-agents destroy [--force]
-npx pi-cloud-agents iam-policy [--yaml]
+```json
+{
+  "aws": { "profile": "personal", "region": "eu-north-1" },
+  "stackName": "pi-cloud-personal",
+  "image": { "name": "pi-cloud-personal", "memoryMiB": 2048 },
+  "defaults": {
+    "model": { "provider": "openai", "id": "gpt-6.1-sol" },
+    "autoPush": false,
+    "maxDurationHours": 1,
+    "maxConcurrent": 1,
+    "idle": { "suspendAfterMin": 2, "terminateAfterSuspendedMin": 5 }
+  },
+  "providers": { "synced": ["openai"], "oauthOptIn": ["openai"], "bedrockRole": false },
+  "github": { "mode": "none" }
+}
 ```
 
----
+Use an owned public repository when testing without a GitHub credential. Inspect the selected profile and configuration, then preview and deploy:
 
-## Model Delegation Tool (`cloud_agent`)
+```sh
+node dist/cli/main.js setup --non-interactive --config "$PI_AGENT_DIR/pi-cloud-agents.json" --dry-run
+node dist/cli/main.js setup --non-interactive --config "$PI_AGENT_DIR/pi-cloud-agents.json"
+```
 
-The local LLM can autonomously delegate tasks to cloud agents using the built-in `cloud_agent` tool:
+Setup deploys core storage/roles, the image and controller, then syncs selected provider credentials to Secrets Manager. `--skip-providers` clears the provider selection; it does not retain it for later sync. Subsequent `sync` and `update` can transfer the selected local configuration again. Keep account-specific stacks and credential namespaces separate.
+
+The example above is a reusable personal stack, not a disposable test deployment. Test operations must follow [the cloud-operation rules](AGENTS.md#cloud-operations--only-when-explicitly-authorized): explicit profile and region, test-prefixed/tagged resources, bounded runtime and verified cleanup. Existing stacks require an image rebuild to use runner changes.
+
+## Launch and retrieve
+
+Start Pi with this checkout's extension and the selected profile environment. Use an absolute extension path when starting from the assignment repository:
+
+```sh
+pi -e /absolute/path/to/pi-cloud-agents/extension/index.ts --skill /absolute/path/to/pi-cloud-agents/skills/cloud-assignment
+```
+
+The portable [cloud-assignment skill](skills/cloud-assignment/SKILL.md) describes input/account
+isolation, bounded execution, artifact recovery and cleanup. A local package installation
+(`pi install /absolute/path/to/pi-cloud-agents`) discovers both the extension and skill;
+loading only `extension/index.ts` requires the explicit `--skill` option above.
+
+The model-facing tool supports `launch`, `status`, `result`, `steer` and `stop`. For a bounded assignment that must not publish:
+
 ```json
 {
   "action": "launch",
-  "prompt": "Implement user authentication with JWT and write unit tests"
+  "prompt": "Verify the requested change in this repository, preserve it, and report the evidence. Do not push.",
+  "autoPush": false,
+  "model": "openai/gpt-6.1-sol"
 }
 ```
-Actions supported: `launch`, `status`, `result`, `steer`, `stop`.
 
----
+Launch resolves local `HEAD` to a commit and the guest fetches that exact commit. Dirty or unpushed work is not silently uploaded or substituted. Publishing policy resolves per-run `autoPush`, then `defaults.autoPush`, then the historical default `true`; set it explicitly when publication is not authorized.
 
-## Pricing and Cost Model
+Retrieve with `cloud_agent` action `result` and the returned `runId`. `wait: true` waits for settlement, subject to `timeoutSeconds`. The answer is read from persisted Pi session records; `settled` describes an agent turn, not a terminated VM or independently verified work. Interrupted work can retain an earlier answer marked incomplete.
 
-- **Idle MicroVMs**: $0.00 / month (suspended VMs incur only S3 snapshot storage at ~$0.08/GB-month).
-- **Running MicroVMs**:
-  - vCPU: $0.0000276944 / second
-  - Memory: $0.0000036667 / GB-second
-  - *Example*: A 2 vCPU / 4 GB MicroVM running for 15 minutes costs ~$0.03 total.
-- **Budget Guards**: Built-in maximum duration bounds (<= 8h), concurrency limits (`defaults.maxConcurrent`), and month-to-date budget warnings.
+The result includes a recovery reference with an S3 key, commit and SHA-256 digest. Download that bundle, verify its digest, and fetch it into an empty Git repository to recover the reported commit. Preservation includes agent-created commits and checkpointed dirty work even with pushing disabled. A preservation error means an earlier bundle may remain recoverable without covering the latest work. See [the protocol](docs/protocol.md) for exact fields.
 
----
+Finish by stopping the exact run and verifying termination. Recover artifacts before deleting storage. Delete only the trial's provider secrets, object versions, image and stacks; broad cleanup can include another session's resources.
 
-## Security Model
+## Development
 
-- **Firecracker Hypervisor Isolation**: Hardware-level virtualization isolation for every run.
-- **Least-Privilege Execution Role**: MicroVMs possess zero `lambda:*` permissions and access only scoped stack prefixes in S3 and Secrets Manager.
-- **Secret Redaction**: In-VM extensions and runner loggers recursively redact all registered secrets with `[REDACTED]`.
-- **Proxy Authentication**: Port-scoped JWE proxy tokens with 30-minute expiration.
+```sh
+npm run check
+npm run test:integration -- --maxWorkers=1
+npm run build
+```
 
----
+Ordinary tests use fake services, temporary Git repositories and a mock model provider. Live AWS tests are separately gated and require cleanup. [AGENTS.md](AGENTS.md) describes the operating rules and [the protocol](docs/protocol.md) documents persisted contracts.
 
 ## License
 
-MIT License.
+MIT. Upstream notices are retained in [LICENSE](LICENSE).

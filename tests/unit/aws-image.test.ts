@@ -12,6 +12,7 @@ import {
   ListManagedMicrovmImagesCommand,
   ListMicrovmImageBuildsCommand,
   ListMicrovmImageVersionsCommand,
+  ListMicrovmImagesCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { HeadObjectCommand, NotFound, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
@@ -352,6 +353,31 @@ describe("T3.3 AWS MicroVM Image Manager", () => {
       expect(desc.baseImageArn).toBe("arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1");
       expect(desc.baseImageVersion).toBe("1.2.0");
       expect(desc.memorySnapshotBytes).toBe(134217728);
+    });
+
+    it("resolves a configured image name to its ARN before calling the image APIs", async () => {
+      const manager = new MicrovmImageManager({ region: "eu-north-1" });
+      const arn = "arn:aws:lambda:eu-north-1:123456789012:microvm-image:pi-cloud-agent";
+      const createdAt = new Date();
+
+      microvmsMock.on(ListMicrovmImagesCommand).resolves({
+        items: [
+          { name: "other-image", imageArn: `${arn}-other`, state: "CREATED", createdAt },
+          { name: "pi-cloud-agent", imageArn: arn, state: "CREATED", createdAt },
+        ],
+      });
+      microvmsMock.on(GetMicrovmImageCommand).resolves({
+        name: "pi-cloud-agent",
+        imageArn: arn,
+        state: "CREATED",
+      });
+
+      await manager.describeImage("pi-cloud-agent");
+      await manager.describeImage("pi-cloud-agent");
+
+      const getCalls = microvmsMock.commandCalls(GetMicrovmImageCommand);
+      expect(getCalls.map((c) => c.args[0].input.imageIdentifier)).toEqual([arn, arn]);
+      expect(microvmsMock.commandCalls(ListMicrovmImagesCommand)).toHaveLength(1);
     });
 
     it("checks image drift detecting changes in runner SHA", async () => {

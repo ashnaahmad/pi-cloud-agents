@@ -9,7 +9,8 @@
   },
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extension/index.ts"]
+    "extensions": ["./extension/index.ts"],
+    "skills": ["./skills"]
   },
   "engines": {
     "node": ">=22.19"
@@ -23,6 +24,13 @@
     "runner/",
     "image/",
     "infra/",
+    "skills/",
+    "AGENTS.md",
+    "docs/protocol.md",
+    "docs/schemas/",
+    "docs/evidence/personal-cloud-trial.md",
+    "docs/evidence/personal-assignment-round-trip.md",
+    "docs/evidence/personal-port.md",
     "LICENSE",
     "README.md"
   ],
@@ -80,9 +88,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@earendil-works/pi-ai": "^0.85.1",
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1",
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
     "@sinclair/typebox": "^0.34.28",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.9",

@@ -7,6 +7,7 @@ import {
   DescribeStackEventsCommand,
   DescribeStacksCommand,
   ExecuteChangeSetCommand,
+  type StackStatus,
 } from "@aws-sdk/client-cloudformation";
 import {
   DeleteObjectsCommand,
@@ -162,6 +163,81 @@ describe("CloudFormation Stack Deployer (T3.2)", () => {
 
       const createCsCall = cfnMock.commandCalls(CreateChangeSetCommand)[0];
       expect(createCsCall?.args[0].input.ChangeSetType).toBe("UPDATE");
+    });
+
+    it("creates a stack left in REVIEW_IN_PROGRESS by a failed first change set", async () => {
+      cfnMock
+        .on(DescribeStacksCommand, { StackName: "review-stack" })
+        .resolvesOnce({
+          Stacks: [
+            {
+              StackName: "review-stack",
+              StackStatus: "REVIEW_IN_PROGRESS",
+              CreationTime: new Date(),
+            },
+          ],
+        })
+        .resolves({
+          Stacks: [
+            {
+              StackName: "review-stack",
+              StackStatus: "CREATE_COMPLETE",
+              CreationTime: new Date(),
+            },
+          ],
+        });
+
+      cfnMock.on(CreateChangeSetCommand).resolves({});
+      cfnMock.on(DescribeChangeSetCommand).resolves({
+        Status: "CREATE_COMPLETE",
+      });
+      cfnMock.on(ExecuteChangeSetCommand).resolves({});
+      cfnMock.on(DescribeStackEventsCommand).resolves({
+        StackEvents: [],
+      });
+
+      const result = await deployer.deployStack({
+        name: "review-stack",
+        templateBody: "AWSTemplateFormatVersion: '2010-09-09'...",
+        pollIntervalMs: 5,
+      });
+
+      expect(result.status).toBe("CREATE_COMPLETE");
+      const createCsCall = cfnMock.commandCalls(CreateChangeSetCommand)[0];
+      expect(createCsCall?.args[0].input.ChangeSetType).toBe("CREATE");
+    });
+
+    it("deletes a ROLLBACK_COMPLETE stack before creating it again", async () => {
+      const stack = (StackStatus: StackStatus) => ({
+        Stacks: [{ StackName: "rolled-back", StackStatus, CreationTime: new Date() }],
+      });
+      cfnMock
+        .on(DescribeStacksCommand, { StackName: "rolled-back" })
+        .resolvesOnce(stack("ROLLBACK_COMPLETE")) // deployStack: initial status
+        .resolvesOnce(stack("ROLLBACK_COMPLETE")) // deleteStack: existence check
+        .resolvesOnce(stack("DELETE_COMPLETE")) // deleteStack: poll
+        .resolves(stack("CREATE_COMPLETE"));
+
+      cfnMock.on(DeleteStackCommand).resolves({});
+      cfnMock.on(CreateChangeSetCommand).resolves({});
+      cfnMock.on(DescribeChangeSetCommand).resolves({
+        Status: "CREATE_COMPLETE",
+      });
+      cfnMock.on(ExecuteChangeSetCommand).resolves({});
+      cfnMock.on(DescribeStackEventsCommand).resolves({
+        StackEvents: [],
+      });
+
+      const result = await deployer.deployStack({
+        name: "rolled-back",
+        templateBody: "AWSTemplateFormatVersion: '2010-09-09'...",
+        pollIntervalMs: 5,
+      });
+
+      expect(result.status).toBe("CREATE_COMPLETE");
+      expect(cfnMock.commandCalls(DeleteStackCommand)).toHaveLength(1);
+      const createCsCall = cfnMock.commandCalls(CreateChangeSetCommand)[0];
+      expect(createCsCall?.args[0].input.ChangeSetType).toBe("CREATE");
     });
 
     it("handles NO_CHANGES change set gracefully as a successful no-op", async () => {

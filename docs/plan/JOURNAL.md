@@ -184,17 +184,16 @@ Entry template:
 - aws: none
 - open: none
 
+## 2026-11-13 · bounded personal assignment round-trip repair
+- did: exact-commit launch, durable session/answer and Git bundle recovery, explicit no-push policy, resumable idle, isolated OAuth metadata and narrowed IAM/image ownership.
+- reviewed: independent source and repair reviews; accepted findings reproduced and fixed. Live trial also fixed endpoint recovery in the shared status reader.
+- validated: local real-Pi/mock-provider and Git restoration tests; personal ChatGPT cloud assignment, automatic suspension, resumed read-back, termination, fresh-repository artifact recovery and absent remote work branch.
+- aws: VM terminated; test stacks, image, versioned bucket, controller logs and copied provider secret deleted and verified absent.
+- left: attach/continue and unattended OAuth renewal remain experimental.
+- evidence: [cloud trial](../evidence/personal-cloud-trial.md), [local checks](../evidence/personal-assignment-round-trip.md).
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+## 2026-11-13 · standalone personal port
+- Published reusable runner/setup fixes with one portable assignment skill and source-based setup.
+- Omitted harness-only scheduler and account-specific Toolkit context; historical plans are references, not mandatory operating rituals.
+- Verified 544 units, both substantive local integrations, type/lint, schemas, build, README offline preview and skill/package discovery. No live operations were repeated.
+- Current publication evidence and limits: [personal-port.md](../evidence/personal-port.md).

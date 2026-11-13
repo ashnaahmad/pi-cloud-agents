@@ -17,6 +17,8 @@ import {
   ListManagedMicrovmImagesCommand,
   ListMicrovmImageBuildsCommand,
   ListMicrovmImageVersionsCommand,
+  ListMicrovmImagesCommand,
+  type MicrovmImageSummary,
   type MicrovmImageVersionSummary,
   ResourceNotFoundException as MicrovmResourceNotFoundException,
 } from "@aws-sdk/client-lambda-microvms";
@@ -273,6 +275,7 @@ export class MicrovmImageManager {
   private readonly s3Client: S3Client;
   private readonly cwClient: CloudWatchLogsClient;
   private readonly region: string;
+  private readonly imageArns = new Map<string, string>();
 
   constructor(options: MicrovmImageManagerOptions = {}) {
     this.region = options.region ?? process.env.AWS_REGION ?? "us-east-1";
@@ -280,6 +283,27 @@ export class MicrovmImageManager {
       options.microvmsClient ?? new LambdaMicrovmsClient({ region: this.region });
     this.s3Client = options.s3Client ?? new S3Client({ region: this.region });
     this.cwClient = options.cwClient ?? new CloudWatchLogsClient({ region: this.region });
+  }
+
+  /**
+   * The MicroVM image APIs accept only an image ARN, not the image name the config stores.
+   * Resolves a name through ListMicrovmImages; falls back to the given value when no image matches.
+   */
+  private async resolveImageIdentifier(imageNameOrArn: string): Promise<string> {
+    if (imageNameOrArn.startsWith("arn:")) return imageNameOrArn;
+    const cached = this.imageArns.get(imageNameOrArn);
+    if (cached) return cached;
+
+    const images: MicrovmImageSummary[] = await collectPages({
+      fetchPage: (nextToken: string | undefined) =>
+        this.microvmsClient.send(new ListMicrovmImagesCommand({ nextToken })),
+      nextToken: (page) => page?.nextToken,
+      items: (page) => page?.items,
+    });
+    const arn = images.find((img) => img.name === imageNameOrArn)?.imageArn;
+    if (!arn) return imageNameOrArn;
+    this.imageArns.set(imageNameOrArn, arn);
+    return arn;
   }
 
   /**
@@ -337,11 +361,12 @@ export class MicrovmImageManager {
     while (Date.now() <= deadline) {
       const elapsedMs = Date.now() - startTime;
 
+      const imageIdentifier = await this.resolveImageIdentifier(params.imageName);
       let imageDesc: GetMicrovmImageOutput;
       try {
         imageDesc = await this.microvmsClient.send(
           new GetMicrovmImageCommand({
-            imageIdentifier: params.imageName,
+            imageIdentifier,
           }),
         );
       } catch (err: unknown) {
@@ -401,7 +426,7 @@ export class MicrovmImageManager {
         try {
           const versionDesc = await this.microvmsClient.send(
             new GetMicrovmImageVersionCommand({
-              imageIdentifier: params.imageName,
+              imageIdentifier,
               imageVersion: targetVersion,
             }),
           );
@@ -504,9 +529,10 @@ export class MicrovmImageManager {
    * Describes the current MicroVM image and its active version for drift checks and dashboard.
    */
   async describeImage(imageName: string): Promise<ImageDescription> {
+    const imageIdentifier = await this.resolveImageIdentifier(imageName);
     const imageDesc = await this.microvmsClient.send(
       new GetMicrovmImageCommand({
-        imageIdentifier: imageName,
+        imageIdentifier,
       }),
     );
 
@@ -524,7 +550,7 @@ export class MicrovmImageManager {
       try {
         const versionDesc = await this.microvmsClient.send(
           new GetMicrovmImageVersionCommand({
-            imageIdentifier: imageName,
+            imageIdentifier,
             imageVersion: activeVersion,
           }),
         );
@@ -577,7 +603,7 @@ export class MicrovmImageManager {
       try {
         const builds = await this.microvmsClient.send(
           new ListMicrovmImageBuildsCommand({
-            imageIdentifier: imageName,
+            imageIdentifier,
             imageVersion: activeVersion,
           }),
         );
@@ -586,7 +612,7 @@ export class MicrovmImageManager {
         if (firstBuildId) {
           const buildDesc = await this.microvmsClient.send(
             new GetMicrovmImageBuildCommand({
-              imageIdentifier: imageName,
+              imageIdentifier,
               imageVersion: activeVersion,
               buildId: firstBuildId,
             }),
@@ -658,10 +684,11 @@ export class MicrovmImageManager {
    * retaining the top `keep` active versions (default = 2: latest active + 1 previous).
    */
   async pruneVersions(imageName: string, keep = 2): Promise<PruneVersionsResult> {
+    const imageIdentifier = await this.resolveImageIdentifier(imageName);
     const versions: MicrovmImageVersionSummary[] = await collectPages({
       fetchPage: (nextToken: string | undefined) =>
         this.microvmsClient.send(
-          new ListMicrovmImageVersionsCommand({ imageIdentifier: imageName, nextToken }),
+          new ListMicrovmImageVersionsCommand({ imageIdentifier, nextToken }),
         ),
       nextToken: (page) => page.nextToken,
       items: (page) => page.items,
@@ -692,7 +719,7 @@ export class MicrovmImageManager {
       try {
         await this.microvmsClient.send(
           new DeleteMicrovmImageVersionCommand({
-            imageIdentifier: imageName,
+            imageIdentifier,
             imageVersion: verStr,
           }),
         );

@@ -1,10 +1,10 @@
 # MicroVM Image for pi-cloud-agents (Final - ARM64 AL2023 base)
-FROM public.ecr.aws/lambda/microvms:al2023-minimal:latest
+FROM public.ecr.aws/lambda/microvms:al2023-minimal
 
 # Install Node.js 22, Git, and essential toolchain utilities
 RUN dnf install -y \
     nodejs22 \
-    npm \
+    nodejs22-npm \
     git \
     tar \
     gzip \
@@ -17,7 +17,7 @@ RUN dnf install -y \
     && rm -rf /var/cache/dnf
 
 # Globally install pinned pi coding agent matching package.json
-RUN npm install -g @earendil-works/pi-coding-agent@0.85.1
+RUN npm install -g @earendil-works/pi-coding-agent@1.4.0
 
 # Configure directory structure
 RUN mkdir -p /opt/pi-cloud/pi-extensions \

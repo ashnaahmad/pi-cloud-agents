@@ -6,7 +6,7 @@
 
 import { createDeterministicZip } from "./zip.js";
 
-export const DEFAULT_BASE_IMAGE = "public.ecr.aws/lambda/microvms:al2023-minimal:latest";
+export const DEFAULT_BASE_IMAGE = "public.ecr.aws/lambda/microvms:al2023-minimal";
 
 export function generateDockerfile(baseImage: string = DEFAULT_BASE_IMAGE): string {
   return `# Generated Dockerfile for pi-cloud-agents hello-microvm and guest-capabilities spikes

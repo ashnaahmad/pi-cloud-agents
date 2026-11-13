@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,13 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AwsClientFactory } from "../../core/aws/clients.js";
-import { generateRunId, inspectGitRepo, launchCloudRun } from "../../core/launcher.js";
+import {
+  generateRunId,
+  inspectGitRepo,
+  launchCloudRun,
+  prepareCloudRun,
+  startPreparedRun,
+} from "../../core/launcher.js";
 import { handleCloudNewCommand } from "../../extension/commands/new.js";
 import type { LocalConfig } from "../../shared/config.js";
 import { RUN_ID_REGEX } from "../../shared/protocol.js";
@@ -129,6 +136,9 @@ describe("Cloud Agent Launcher (T4.4)", () => {
 
       expect(result.runId).toMatch(RUN_ID_REGEX);
       expect(result.manifest.status).toBe("launching");
+      expect(result.manifest.repo.ref).toBe(
+        execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+      );
       expect(result.workBranch).toBe(`pi-cloud/${result.runId}`);
       expect(result.endpoint).toBeDefined();
     });
@@ -243,6 +253,140 @@ describe("Cloud Agent Launcher (T4.4)", () => {
           clientFactory,
         }),
       ).rejects.toThrow(/Failed to launch MicroVM/i);
+    });
+
+    it("runs the MicroVM with the core stack's execution role and image log group", async () => {
+      cfnMock.on(DescribeStacksCommand).resolves({
+        Stacks: [
+          {
+            StackName: "pi-cloud-agents-test",
+            CreationTime: new Date(),
+            StackStatus: "CREATE_COMPLETE",
+            Outputs: [
+              { OutputKey: "BucketName", OutputValue: "test-storage-bucket" },
+              {
+                OutputKey: "ExecutionRoleArn",
+                OutputValue: "arn:aws:iam::123456789012:role/execution",
+              },
+              { OutputKey: "ImageLogGroup", OutputValue: "/aws/lambda/microvms/runner-test" },
+            ],
+          },
+        ],
+      });
+      microvmsMock.on(GetMicrovmImageCommand).resolves({
+        imageArn: "arn:aws:lambda:us-east-1:123456789012:microvm-image:pi-cloud-agents-runner-test",
+        state: "CREATED",
+        latestActiveImageVersion: "1",
+      });
+      microvmsMock.on(GetMicrovmImageVersionCommand).resolves({
+        imageVersion: "1",
+        state: "SUCCESSFUL",
+        status: "ACTIVE",
+      });
+      microvmsMock.on(ListMicrovmsCommand).resolves({ items: [] });
+      s3Mock.on(PutObjectCommand).resolves({});
+      microvmsMock.on(RunMicrovmCommand).rejects(new Error("stop after RunMicrovm"));
+
+      await expect(
+        launchCloudRun({ prompt: "Check run input", config: mockConfig, clientFactory }),
+      ).rejects.toThrow(/Failed to launch MicroVM/i);
+
+      const input = microvmsMock.commandCalls(RunMicrovmCommand)[0]?.args[0].input;
+      expect(input?.executionRoleArn).toBe("arn:aws:iam::123456789012:role/execution");
+      expect(input?.logging).toEqual({
+        cloudWatch: { logGroup: "/aws/lambda/microvms/runner-test" },
+      });
+    });
+
+    it("prepares without writing and starts later from the stored preparation with its run limits", async () => {
+      cfnMock.on(DescribeStacksCommand).resolves({
+        Stacks: [
+          {
+            StackName: "pi-cloud-agents-test",
+            CreationTime: new Date(),
+            StackStatus: "CREATE_COMPLETE",
+            Outputs: [{ OutputKey: "BucketName", OutputValue: "test-storage-bucket" }],
+          },
+        ],
+      });
+      microvmsMock.on(GetMicrovmImageCommand).resolves({
+        imageArn: "arn:aws:lambda:us-east-1:123456789012:microvm-image:pi-cloud-agents-runner-test",
+        state: "CREATED",
+        latestActiveImageVersion: "1",
+      });
+      microvmsMock.on(GetMicrovmImageVersionCommand).resolves({
+        imageVersion: "1",
+        state: "SUCCESSFUL",
+        status: "ACTIVE",
+      });
+      microvmsMock.on(ListMicrovmsCommand).resolves({ items: [] });
+      s3Mock.on(PutObjectCommand).resolves({});
+      microvmsMock.on(RunMicrovmCommand).rejects(new Error("stop after RunMicrovm"));
+
+      const defaultPreparation = await prepareCloudRun({ config: mockConfig, clientFactory });
+      expect(defaultPreparation.prepared.payload.options.autoPush).toBe(true);
+      const noPushConfig = { ...mockConfig, defaults: { ...mockConfig.defaults, autoPush: false } };
+      expect(
+        (await prepareCloudRun({ config: noPushConfig, clientFactory })).prepared.payload.options
+          .autoPush,
+      ).toBe(false);
+      expect(
+        (await prepareCloudRun({ config: noPushConfig, clientFactory, autoPush: true })).prepared
+          .payload.options.autoPush,
+      ).toBe(true);
+      const { prepared } = await prepareCloudRun({
+        config: mockConfig,
+        clientFactory,
+        maxDurationSec: 900,
+        autoPush: false,
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+      expect(microvmsMock.commandCalls(RunMicrovmCommand)).toHaveLength(0);
+
+      const stored = JSON.parse(JSON.stringify(prepared)) as typeof prepared;
+      await expect(startPreparedRun(stored, { prompt: "later", clientFactory })).rejects.toThrow(
+        /Failed to launch MicroVM/i,
+      );
+
+      const input = microvmsMock.commandCalls(RunMicrovmCommand)[0]?.args[0].input;
+      expect(input?.clientToken).toBe(prepared.payload.runId);
+      expect(input?.maximumDurationInSeconds).toBe(900);
+      const payload = JSON.parse(String(input?.runHookPayload));
+      expect(payload.options).toMatchObject({ maxDurationSec: 900, autoPush: false });
+    });
+
+    it("reports the created MicroVM when a write after RunMicrovm fails", async () => {
+      cfnMock.on(DescribeStacksCommand).resolves({
+        Stacks: [
+          {
+            StackName: "pi-cloud-agents-test",
+            CreationTime: new Date(),
+            StackStatus: "CREATE_COMPLETE",
+            Outputs: [{ OutputKey: "BucketName", OutputValue: "test-storage-bucket" }],
+          },
+        ],
+      });
+      microvmsMock.on(GetMicrovmImageCommand).resolves({
+        imageArn: "arn:aws:lambda:us-east-1:123456789012:microvm-image:pi-cloud-agents-runner-test",
+        state: "CREATED",
+        latestActiveImageVersion: "1",
+      });
+      microvmsMock.on(GetMicrovmImageVersionCommand).resolves({
+        imageVersion: "1",
+        state: "SUCCESSFUL",
+        status: "ACTIVE",
+      });
+      microvmsMock.on(ListMicrovmsCommand).resolves({ items: [] });
+      microvmsMock.on(RunMicrovmCommand).resolves({ microvmId: "microvm-9", endpoint: "e" });
+      s3Mock.on(PutObjectCommand).resolves({});
+      s3Mock.on(PutObjectCommand, { Key: "index/microvm-9" }).rejects(new Error("denied"));
+
+      const { prepared } = await prepareCloudRun({ config: mockConfig, clientFactory });
+      await expect(
+        startPreparedRun(prepared, { prompt: "p", clientFactory }),
+      ).rejects.toMatchObject({
+        microvmId: "microvm-9",
+      });
     });
   });
 

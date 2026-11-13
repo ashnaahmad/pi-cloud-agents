@@ -115,8 +115,19 @@ export class StackDeployer {
     const deadline = Date.now() + timeoutMs;
 
     // 1. Determine whether to CREATE or UPDATE
-    const existing = await this.describeStack(params.name);
-    const isUpdate = existing !== undefined && existing.StackStatus !== "DELETE_COMPLETE";
+    let existing = await this.describeStack(params.name);
+    // A failed first create leaves ROLLBACK_COMPLETE with every resource already removed.
+    // CloudFormation cannot update such a stack, so delete it and create afresh.
+    if (existing?.StackStatus === "ROLLBACK_COMPLETE") {
+      await this.deleteStack(params.name, { pollIntervalMs: pollInterval, timeoutMs });
+      existing = undefined;
+    }
+    // A stack left in REVIEW_IN_PROGRESS by a failed first change set has no template yet, so it
+    // still needs a CREATE change set.
+    const isUpdate =
+      existing !== undefined &&
+      existing.StackStatus !== "DELETE_COMPLETE" &&
+      existing.StackStatus !== "REVIEW_IN_PROGRESS";
     const changeSetType = isUpdate ? "UPDATE" : "CREATE";
 
     const changeSetName = `cs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

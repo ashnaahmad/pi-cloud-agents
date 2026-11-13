@@ -318,6 +318,38 @@ describe("CloudFormation Core Stack Security Policies (T3.1a)", () => {
     expectOnlyAllowedWildcards(resources);
   });
 
+  it("limits build and guest log writes to the selected image", () => {
+    for (const role of ["BuildRole", "ExecutionRole"]) {
+      const grants = collectAllowStatements(resources)
+        .filter(
+          (s) => s.resource === role && asList(s.statement.Action).includes("logs:PutLogEvents"),
+        )
+        .flatMap((s) => asList(s.statement.Resource));
+      const patterns = grants.map((grant) => {
+        const sub = (grant as unknown as { "Fn::Sub": string })["Fn::Sub"];
+        const arn = sub
+          .replaceAll("${AWS::Region}", "eu-north-1")
+          .replaceAll("${AWS::AccountId}", "123456789012")
+          .replaceAll("${ImageName}", "trial");
+        return new RegExp(
+          `^${arn
+            .split("*")
+            .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+            .join(".*")}$`,
+        );
+      });
+      const canWrite = (name: string) =>
+        patterns.some((p) =>
+          p.test(
+            `arn:aws:logs:eu-north-1:123456789012:log-group:/aws/lambda/microvms/${name}:log-stream:probe`,
+          ),
+        );
+      expect(canWrite("trial")).toBe(true);
+      expect(canWrite("trial-other")).toBe(false);
+      expect(canWrite("unrelated")).toBe(false);
+    }
+  });
+
   it("exports all required outputs", () => {
     expect(outputs.BucketName).toBeDefined();
     expect(outputs.BucketArn).toBeDefined();
@@ -398,15 +430,30 @@ describe("CloudFormation Image Stack & Controller (T3.1b)", () => {
 
   it("explicitly configures all hook timeouts (never relying on 1s defaults)", () => {
     const image = resources.MicrovmImage;
-    const hooks = image?.Properties?.Hooks as Record<string, { TimeoutInSeconds: number }>;
+    const hooks = image?.Properties?.Hooks as {
+      Port: number;
+      MicrovmImageHooks: Record<string, string | number>;
+      MicrovmHooks: Record<string, string | number>;
+    };
     expect(hooks).toBeDefined();
+    expect(hooks.Port).toBe(9000);
 
-    expect(hooks.ReadyHook?.TimeoutInSeconds).toBe(120);
-    expect(hooks.ValidateHook?.TimeoutInSeconds).toBe(120);
-    expect(hooks.RunHook?.TimeoutInSeconds).toBe(30);
-    expect(hooks.ResumeHook?.TimeoutInSeconds).toBe(15);
-    expect(hooks.SuspendHook?.TimeoutInSeconds).toBe(45);
-    expect(hooks.TerminateHook?.TimeoutInSeconds).toBe(45);
+    expect(hooks.MicrovmImageHooks).toEqual({
+      Ready: "ENABLED",
+      ReadyTimeoutInSeconds: 120,
+      Validate: "ENABLED",
+      ValidateTimeoutInSeconds: 120,
+    });
+    expect(hooks.MicrovmHooks).toEqual({
+      Run: "ENABLED",
+      RunTimeoutInSeconds: 30,
+      Resume: "ENABLED",
+      ResumeTimeoutInSeconds: 15,
+      Suspend: "ENABLED",
+      SuspendTimeoutInSeconds: 45,
+      Terminate: "ENABLED",
+      TerminateTimeoutInSeconds: 45,
+    });
   });
 
   it("configures Controller Lambda function and IAM role with required permissions", () => {
@@ -457,6 +504,11 @@ describe("CloudFormation Image Stack & Controller (T3.1b)", () => {
 
     const cleanup = statements.find((s) => s.Sid === "JanitorSecretCleanup");
     expect(asList(cleanup?.Resource)).not.toContain("*");
+
+    // lambda:ListMicrovms is authorised against "*"; MicroVM ARNs alone deny it.
+    const listing = statements.find((s) => s.Sid === "MicrovmListing");
+    expect(asList(listing?.Action)).toEqual(["lambda:ListMicrovms"]);
+    expect(asList(listing?.Resource)).toEqual(["*"]);
   });
 
   it("declares optional KmsKeyArn parameter and HasKmsKey condition in infra/image.yaml", () => {
